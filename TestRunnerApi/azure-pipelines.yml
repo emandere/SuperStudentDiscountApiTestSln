@@ -1,0 +1,70 @@
+# Docker
+# Build a Docker image 
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  tag: '$(Build.BuildId)'
+  releaseTag: '$(Build.BuildNumber)'
+  serviceName: 'superstudentdiscountapi'
+  ImageName: 'dnunley/$(serviceName)'
+  DeploymentPath: '/home/ec2-user/deployments/$(serviceName)/$(releaseTag)'
+  GitHubDeploymentPath: 'https://raw.githubusercontent.com/domnunley/$(serviceName)/master/deployment.yaml'
+  DeploymentConfigPath: '/home/ec2-user/deployments/$(serviceName)/$(releaseTag)/deployment.yaml'
+
+stages:
+- stage: Build
+  displayName: Build image
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Docker@2
+      displayName: Build an image
+      inputs:
+        command: buildAndPush
+        dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
+        containerRegistry: 'dockerhub'
+        repository: '$(ImageName)'
+        tags: |
+          $(tag)
+- stage: Deploy
+  jobs:
+    # track deployments on the environment
+  - deployment: AWS
+    pool:
+      vmImage: 'ubuntu-latest'
+    # creates an environment if it doesn’t exist
+    environment: '$(serviceName)'
+    strategy:
+      # default deployment strategy
+      runOnce:
+        deploy:
+          steps:
+            - task: SSH@0
+              displayName: 'Set up release artifacts'
+              inputs:
+                sshEndpoint: 'awshost'
+                commands: |
+                  mkdir -p $(DeploymentPath)
+                  rm -f $(DeploymentPath)/*
+                  chmod 775 $(DeploymentPath)
+                  wget -q $(GitHubDeploymentPath) -P  $(DeploymentPath)
+                  sed -i 's/{buildId}/$(Build.BuildId)/'  $(DeploymentConfigPath)
+            - task: SSH@0
+              displayName: 'Deploy new release'
+              inputs:
+                sshEndpoint: 'awshost'
+                commands: 'k3s kubectl apply -f  $(DeploymentConfigPath)'
+            - task: SSH@0
+              displayName: 'Verify Release'
+              inputs:
+                sshEndpoint: 'awshost'
+                commands: 'k3s kubectl rollout status deployment.v1.apps/$(serviceName)'
